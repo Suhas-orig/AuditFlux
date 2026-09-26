@@ -1,0 +1,18 @@
+# BFW dataset / large files
+*.zip
+*.md5
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Virtual environments
+venv/
+.venv/
+
+# VS Code
+.vscode/
+
+# OS
+Thumbs.db
+.DS_Store
