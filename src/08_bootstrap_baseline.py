@@ -1,16 +1,17 @@
 import pandas as pd
 import numpy as np
 from scipy.stats import kendalltau
+from config import BFW_DATA_PATH, OUTPUT_DIR
+
 
 # =========================================================
 # CONFIG
 # =========================================================
 
-DATA_PATH = r"K:\Capstone Project\bfw-datatable.csv"
-OUTPUT_PATH = r"K:\Capstone Project\AuditFlux\outputs\bootstrap_baseline_resnet50.csv"
-
 MODEL = "resnet50"
+
 THRESHOLD = 0.50
+
 BOOTSTRAP_REPETITIONS = 1000
 
 GROUP_COLUMN = "a1"
@@ -25,7 +26,7 @@ RANDOM_SEED = 42
 print("Loading BFW dataset...")
 
 df = pd.read_csv(
-    DATA_PATH,
+    BFW_DATA_PATH,
     usecols=[GROUP_COLUMN, "label", MODEL]
 )
 
@@ -61,7 +62,10 @@ predictions = (
 # 3 = TP
 # =========================================================
 
-outcome_codes = np.zeros(len(df), dtype=np.int8)
+outcome_codes = np.zeros(
+    len(df),
+    dtype=np.int8
+)
 
 # True negative
 outcome_codes[
@@ -140,8 +144,16 @@ print("REFERENCE AUDIT")
 print("=" * 60)
 
 print(f"Threshold: {THRESHOLD}")
-print(f"FNR worst group: {reference_fnr_worst}")
-print(f"FPR worst group: {reference_fpr_worst}")
+
+print(
+    f"FNR worst group: "
+    f"{reference_fnr_worst}"
+)
+
+print(
+    f"FPR worst group: "
+    f"{reference_fpr_worst}"
+)
 
 print("\nFNR ranking:")
 
@@ -174,7 +186,10 @@ print("\n" + "=" * 60)
 print("BOOTSTRAP")
 print("=" * 60)
 
-for repetition in range(1, BOOTSTRAP_REPETITIONS + 1):
+for repetition in range(
+    1,
+    BOOTSTRAP_REPETITIONS + 1
+):
 
     # -----------------------------------------------------
     # Sample N rows WITH replacement.
@@ -191,6 +206,7 @@ for repetition in range(1, BOOTSTRAP_REPETITIONS + 1):
         sample_indices
     ]
 
+
     # -----------------------------------------------------
     # Count TN / FP / FN / TP for every group
     # -----------------------------------------------------
@@ -205,13 +221,17 @@ for repetition in range(1, BOOTSTRAP_REPETITIONS + 1):
     FN = bootstrap_counts[:, 2]
     TP = bootstrap_counts[:, 3]
 
+
     # -----------------------------------------------------
     # Calculate metrics
     # -----------------------------------------------------
 
     TPR = TP / (TP + FN)
+
     FNR = FN / (TP + FN)
+
     FPR = FP / (FP + TN)
+
 
     # -----------------------------------------------------
     # FNR ranking
@@ -228,6 +248,7 @@ for repetition in range(1, BOOTSTRAP_REPETITIONS + 1):
     )
 
     # Compare bootstrap ranking to reference ranking
+
     fnr_tau, _ = kendalltau(
         reference_fnr_ranking,
         fnr_ranking
@@ -236,6 +257,7 @@ for repetition in range(1, BOOTSTRAP_REPETITIONS + 1):
     fnr_ranking_instability = (
         1 - fnr_tau
     )
+
 
     # -----------------------------------------------------
     # FPR ranking
@@ -260,6 +282,7 @@ for repetition in range(1, BOOTSTRAP_REPETITIONS + 1):
         1 - fpr_tau
     )
 
+
     # -----------------------------------------------------
     # Store one row per bootstrap repetition
     # -----------------------------------------------------
@@ -269,27 +292,39 @@ for repetition in range(1, BOOTSTRAP_REPETITIONS + 1):
         "repetition": repetition,
 
         # FNR
+
         "fnr_worst_group": fnr_worst,
+
         "fnr_worst_group_reversal": int(
             fnr_worst != reference_fnr_worst
         ),
+
         "fnr_gap": fnr_gap,
+
         "fnr_kendall_tau": fnr_tau,
+
         "fnr_ranking_instability":
             fnr_ranking_instability,
 
         # FPR
+
         "fpr_worst_group": fpr_worst,
+
         "fpr_worst_group_reversal": int(
             fpr_worst != reference_fpr_worst
         ),
+
         "fpr_gap": fpr_gap,
+
         "fpr_kendall_tau": fpr_tau,
+
         "fpr_ranking_instability":
             fpr_ranking_instability
     })
 
+
     if repetition % 100 == 0:
+
         print(
             f"Completed "
             f"{repetition}/{BOOTSTRAP_REPETITIONS}"
@@ -301,6 +336,10 @@ for repetition in range(1, BOOTSTRAP_REPETITIONS + 1):
 # =========================================================
 
 results_df = pd.DataFrame(results)
+
+OUTPUT_PATH = (
+    OUTPUT_DIR / "bootstrap_baseline_resnet50.csv"
+)
 
 results_df.to_csv(
     OUTPUT_PATH,

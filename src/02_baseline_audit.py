@@ -1,10 +1,9 @@
 import pandas as pd
+from config import BFW_DATA_PATH
 
 # -----------------------------
 # Configuration
 # -----------------------------
-
-DATA_PATH = r"K:\Capstone Project\bfw-datatable.csv"
 
 MODEL = "resnet50"
 
@@ -17,7 +16,7 @@ THRESHOLD = 0.5
 # Load data
 # -----------------------------
 
-df = pd.read_csv(DATA_PATH)
+df = pd.read_csv(BFW_DATA_PATH)
 
 
 # -----------------------------
@@ -79,7 +78,6 @@ results_df = pd.DataFrame(results)
 print("\n=== BASELINE FAIRNESS AUDIT ===")
 print(f"Model: {MODEL}")
 print(f"Threshold: {THRESHOLD}")
-
 print("\n")
 print(results_df.to_string(index=False))
 

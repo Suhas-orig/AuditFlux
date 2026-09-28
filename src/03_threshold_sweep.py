@@ -1,12 +1,9 @@
-#threshold_sweep.py
-
 import pandas as pd
+from config import BFW_DATA_PATH
 
 # -----------------------------
 # Configuration
 # -----------------------------
-
-DATA_PATH = r"K:\Capstone Project\bfw-datatable.csv"
 
 MODEL = "resnet50"
 
@@ -18,7 +15,7 @@ THRESHOLDS = [0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70]
 # Load data
 # -----------------------------
 
-df = pd.read_csv(DATA_PATH)
+df = pd.read_csv(BFW_DATA_PATH)
 
 
 # -----------------------------
@@ -92,6 +89,7 @@ fnr_table = results_df.pivot(
 
 print(fnr_table.round(4).to_string())
 
+
 print("\n=== FPR BY GROUP ===")
 
 fpr_table = results_df.pivot(
@@ -102,6 +100,7 @@ fpr_table = results_df.pivot(
 
 print(fpr_table.round(4).to_string())
 
+
 print("\n=== TPR BY GROUP ===")
 
 tpr_table = results_df.pivot(
@@ -111,6 +110,7 @@ tpr_table = results_df.pivot(
 )
 
 print(tpr_table.round(4).to_string())
+
 
 # -----------------------------
 # Save results

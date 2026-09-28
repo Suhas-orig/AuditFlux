@@ -1,15 +1,13 @@
 import pandas as pd
 from scipy.stats import kendalltau
+from config import OUTPUT_DIR
 
 
 # ============================================================
 # CONFIGURATION
 # ============================================================
 
-INPUT_PATH = (
-    r"K:\Capstone Project\AuditFlux"
-    r"\outputs\threshold_sweep_resnet50.csv"
-)
+INPUT_PATH = OUTPUT_DIR / "threshold_sweep_resnet50.csv"
 
 METRICS = ["FNR", "FPR", "TPR"]
 
@@ -27,7 +25,6 @@ df = pd.read_csv(INPUT_PATH)
 
 rankings = {}
 
-
 for threshold in sorted(df["threshold"].unique()):
 
     threshold_df = df[df["threshold"] == threshold].copy()
@@ -36,22 +33,18 @@ for threshold in sorted(df["threshold"].unique()):
 
     for metric in METRICS:
 
-        # For all three metrics, higher value means
-        # worse performance for our comparison.
-        #
-        # FNR: higher = more genuine pairs rejected
-        # FPR: higher = more impostor pairs accepted
-        #
-        # TPR is different: higher TPR is BETTER.
-        # Therefore, for TPR we rank from lowest to highest
-        # so that rank 1 represents the worst group.
+        # FNR/FPR: higher = worse
+        # TPR: lower = worse
 
         if metric == "TPR":
+
             sorted_df = threshold_df.sort_values(
                 by=metric,
                 ascending=True
             )
+
         else:
+
             sorted_df = threshold_df.sort_values(
                 by=metric,
                 ascending=False
@@ -123,6 +116,7 @@ for threshold in sorted(rankings.keys()):
             ranking_b = rankings[threshold][metric_b]
 
             # Convert rankings into numerical positions
+
             positions_a = {
                 group: rank
                 for rank, group in enumerate(ranking_a)
@@ -178,11 +172,7 @@ for threshold in sorted(rankings.keys()):
 
 worst_df = pd.DataFrame(worst_rows)
 
-
-OUTPUT_PATH = (
-    r"K:\Capstone Project\AuditFlux"
-    r"\outputs\metric_comparison.csv"
-)
+OUTPUT_PATH = OUTPUT_DIR / "metric_comparison.csv"
 
 worst_df.to_csv(
     OUTPUT_PATH,

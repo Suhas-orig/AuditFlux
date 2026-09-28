@@ -1,12 +1,16 @@
 import pandas as pd
 import numpy as np
 from scipy.stats import kendalltau
+from config import OUTPUT_DIR
 
-THRESHOLD_FILE = r"K:\Capstone Project\AuditFlux\outputs\threshold_sweep_resnet50.csv"
-SAMPLE_FILE = r"K:\Capstone Project\AuditFlux\outputs\sample_size_sweep_resnet50.csv"
 
-THRESHOLD_OUTPUT = r"K:\Capstone Project\AuditFlux\outputs\threshold_instability_metrics.csv"
-SAMPLE_OUTPUT = r"K:\Capstone Project\AuditFlux\outputs\sample_instability_metrics.csv"
+THRESHOLD_FILE = OUTPUT_DIR / "threshold_sweep_resnet50.csv"
+
+SAMPLE_FILE = OUTPUT_DIR / "sample_size_sweep_resnet50.csv"
+
+THRESHOLD_OUTPUT = OUTPUT_DIR / "threshold_instability_metrics.csv"
+
+SAMPLE_OUTPUT = OUTPUT_DIR / "sample_instability_metrics.csv"
 
 METRICS = ["FNR", "FPR"]
 
@@ -65,13 +69,16 @@ for metric in METRICS:
         )
 
         if previous_ranking is not None:
+
             tau, _ = kendalltau(
                 previous_ranking,
                 ranking
             )
 
             ranking_instability = 1 - tau
+
         else:
+
             tau = np.nan
             ranking_instability = np.nan
 
@@ -160,7 +167,9 @@ print("\n" + "=" * 60)
 print("THRESHOLD INSTABILITY")
 print("=" * 60)
 
-print(threshold_results_df.to_string(index=False))
+print(
+    threshold_results_df.to_string(index=False)
+)
 
 
 print("\n" + "=" * 60)

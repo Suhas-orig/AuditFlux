@@ -1,20 +1,28 @@
 import pandas as pd
 import numpy as np
+from config import BFW_DATA_PATH, OUTPUT_DIR
 
-DATA_PATH = r"K:\Capstone Project\bfw-datatable.csv"
-OUTPUT_PATH = r"K:\Capstone Project\AuditFlux\outputs\sample_size_sweep_resnet50.csv"
 
 MODEL = "resnet50"
+
 THRESHOLD = 0.50
 
 SAMPLE_SIZES = [100000, 50000, 20000, 10000, 5000]
+
 REPETITIONS = 20
 
 GROUP_COLUMN = "a1"
 
-df = pd.read_csv(DATA_PATH)
+
+# ---------------------------------------------------------
+# Load data
+# ---------------------------------------------------------
+
+df = pd.read_csv(BFW_DATA_PATH)
+
 
 # We need enough data in every subgroup for every sample size.
+
 groups = sorted(df[GROUP_COLUMN].unique())
 
 rng = np.random.default_rng(42)
@@ -23,12 +31,15 @@ results = []
 
 
 def calculate_metrics(sample):
+
     sample = sample.copy()
+
     sample["prediction"] = (
         sample[MODEL] >= THRESHOLD
     ).astype(int)
 
     for group in groups:
+
         g = sample[sample[GROUP_COLUMN] == group]
 
         tp = ((g["label"] == 1) & (g["prediction"] == 1)).sum()
@@ -59,15 +70,19 @@ for sample_size in SAMPLE_SIZES:
 
     # Allocate approximately equal numbers according
     # to the original subgroup proportions.
+
     proportions = (
         df[GROUP_COLUMN]
         .value_counts(normalize=True)
         .sort_index()
     )
 
-    counts = (proportions * sample_size).round().astype(int)
+    counts = (
+        proportions * sample_size
+    ).round().astype(int)
 
     # Correct rounding so total is exactly sample_size.
+
     difference = sample_size - counts.sum()
 
     if difference != 0:
@@ -104,6 +119,8 @@ for sample_size in SAMPLE_SIZES:
 
 
 results_df = pd.DataFrame(results)
+
+OUTPUT_PATH = OUTPUT_DIR / "sample_size_sweep_resnet50.csv"
 
 results_df.to_csv(
     OUTPUT_PATH,

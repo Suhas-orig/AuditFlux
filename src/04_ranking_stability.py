@@ -1,14 +1,13 @@
-#ranking_stability.py
 import pandas as pd
 from scipy.stats import kendalltau
+from config import OUTPUT_DIR
 
 
 # ============================================================
 # CONFIGURATION
 # ============================================================
 
-INPUT_PATH = r"K:\Capstone Project\AuditFlux\outputs\threshold_sweep_resnet50.csv"
-
+INPUT_PATH = OUTPUT_DIR / "threshold_sweep_resnet50.csv"
 METRIC = "FNR"
 
 
@@ -101,7 +100,7 @@ for i in range(1, len(thresholds)):
     else:
         for group, old_rank, new_rank in changed_groups:
             print(
-                f"{group}: rank {old_rank} → rank {new_rank}"
+                f"{group}: rank {old_rank} → {new_rank}"
             )
 
 
@@ -172,10 +171,7 @@ for threshold, ranking in rankings.items():
 
 ranking_df = pd.DataFrame(ranking_rows)
 
-OUTPUT_PATH = (
-    r"K:\Capstone Project\AuditFlux"
-    r"\outputs\ranking_stability_fnr.csv"
-)
+OUTPUT_PATH = OUTPUT_DIR / "ranking_stability_fnr.csv"
 
 ranking_df.to_csv(
     OUTPUT_PATH,

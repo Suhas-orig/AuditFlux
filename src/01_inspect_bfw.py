@@ -1,10 +1,8 @@
 import pandas as pd
-
-# BFW dataset location
-DATA_PATH = r"K:\Capstone Project\bfw-datatable.csv"
+from config import BFW_DATA_PATH
 
 # Load dataset
-df = pd.read_csv(DATA_PATH)
+df = pd.read_csv(BFW_DATA_PATH)
 
 print("\n=== DATASET SHAPE ===")
 print(df.shape)
@@ -18,7 +16,7 @@ print(df["label"].value_counts())
 print("\n=== FOLDS ===")
 print(df["fold"].value_counts().sort_index())
 
-print("\n=== RACE COUNTS ===")
+print("\n=== RACE × GENDER COUNTS ===")
 print(df["a1"].value_counts())
 
 print("\n=== GENDER COUNTS ===")
