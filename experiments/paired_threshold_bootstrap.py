@@ -4,6 +4,7 @@ from scipy.stats import kendalltau
 
 from pathlib import Path
 import sys
+import gc
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = PROJECT_ROOT / "src"
@@ -30,47 +31,82 @@ RANDOM_SEED = 42
 
 METRICS = ["FNR", "FPR"]
 
+# Save intermediate results so a long run does not lose
+# everything if the process is interrupted.
+CHECKPOINT_EVERY = 100
+
 
 # ============================================================
 # HELPERS
 # ============================================================
 
-def calculate_metrics(labels, scores, groups, threshold):
+def calculate_metrics_fast(labels, scores, group_codes, group_names, threshold):
     """
     Calculate FNR, FPR and TPR for every demographic group.
+
+    This is mathematically equivalent to the original
+    calculate_metrics(), but avoids repeatedly creating an
+    object/string array and calling np.unique() on ~924k rows.
+
+    Group/outcome combinations are encoded into 32 integer
+    categories (8 groups x 4 outcomes), then counted with
+    np.bincount().
     """
 
-    predictions = scores >= threshold
+    predictions = (scores >= threshold).astype(np.int8)
 
-    rows = []
+    # Outcome encoding is identical to:
+    # 0 = TN
+    # 1 = FP
+    # 2 = FN
+    # 3 = TP
+    #
+    # label*2 + prediction gives exactly this mapping.
+    outcome_codes = labels * 2 + predictions
 
-    for group in sorted(np.unique(groups)):
+    combined_codes = group_codes * 4 + outcome_codes
 
-        mask = groups == group
+    counts = np.bincount(
+        combined_codes,
+        minlength=len(group_names) * 4
+    ).reshape(len(group_names), 4)
 
-        y = labels[mask]
-        pred = predictions[mask]
+    tn = counts[:, 0]
+    fp = counts[:, 1]
+    fn = counts[:, 2]
+    tp = counts[:, 3]
 
-        tp = np.sum((y == 1) & (pred == 1))
-        fn = np.sum((y == 1) & (pred == 0))
+    positives = tp + fn
+    negatives = fp + tn
 
-        fp = np.sum((y == 0) & (pred == 1))
-        tn = np.sum((y == 0) & (pred == 0))
+    tpr = np.divide(
+        tp,
+        positives,
+        out=np.full(len(group_names), np.nan, dtype=float),
+        where=positives > 0
+    )
 
-        tpr = tp / (tp + fn) if (tp + fn) > 0 else np.nan
-        fnr = fn / (tp + fn) if (tp + fn) > 0 else np.nan
+    fnr = np.divide(
+        fn,
+        positives,
+        out=np.full(len(group_names), np.nan, dtype=float),
+        where=positives > 0
+    )
 
-        fpr = fp / (fp + tn) if (fp + tn) > 0 else np.nan
+    fpr = np.divide(
+        fp,
+        negatives,
+        out=np.full(len(group_names), np.nan, dtype=float),
+        where=negatives > 0
+    )
 
-        rows.append({
-            "threshold": threshold,
-            "group": group,
-            "TPR": tpr,
-            "FNR": fnr,
-            "FPR": fpr
-        })
-
-    return pd.DataFrame(rows)
+    return pd.DataFrame({
+        "threshold": threshold,
+        "group": group_names,
+        "TPR": tpr,
+        "FNR": fnr,
+        "FPR": fpr
+    })
 
 
 def get_ranking(metrics_df, metric):
@@ -95,8 +131,8 @@ def compare_rankings(ranking_a, ranking_b):
     """
     Compare two rankings correctly.
 
-    We align the rankings by group and compare each group's
-    rank position.
+    The rankings are aligned by group and Kendall's tau is
+    calculated on the corresponding rank positions.
     """
 
     rank_a = {
@@ -129,6 +165,25 @@ def calculate_gap(metrics_df, metric):
     return values.max() - values.min()
 
 
+def save_checkpoints(raw_results, transition_results, raw_path, transition_path):
+    """
+    Save the current accumulated results.
+
+    This does not alter the experiment or RNG sequence; it only
+    writes the results accumulated so far to disk.
+    """
+
+    pd.DataFrame(raw_results).to_csv(
+        raw_path,
+        index=False
+    )
+
+    pd.DataFrame(transition_results).to_csv(
+        transition_path,
+        index=False
+    )
+
+
 # ============================================================
 # LOAD DATA
 # ============================================================
@@ -144,17 +199,50 @@ df = pd.read_csv(
     usecols=["label", MODEL, "a1"]
 )
 
-labels = df["label"].to_numpy()
-scores = df[MODEL].to_numpy()
-groups = df["a1"].to_numpy()
+# Convert once to compact NumPy arrays.
+labels = df["label"].to_numpy(dtype=np.int8)
+scores = df[MODEL].to_numpy(dtype=np.float64)
+
+# np.unique() is performed ONLY ONCE on the original 923k rows.
+# It returns sorted group names, matching sorted(np.unique(groups))
+# from the original implementation.
+group_names, group_codes = np.unique(
+    df["a1"].to_numpy(),
+    return_inverse=True
+)
+
+group_codes = group_codes.astype(np.int8, copy=False)
 
 n = len(df)
 
+# The DataFrame is no longer needed.
+del df
+gc.collect()
+
 print(f"Dataset size: {n:,}")
 print(f"Model: {MODEL}")
+print(f"Groups: {list(group_names)}")
 print(f"Thresholds: {THRESHOLDS}")
 print(f"Bootstrap repetitions: {BOOTSTRAP_REPETITIONS}")
 print(f"Random seed: {RANDOM_SEED}")
+
+
+# ============================================================
+# OUTPUT PATHS
+# ============================================================
+
+OUTPUT_DIR.mkdir(
+    parents=True,
+    exist_ok=True
+)
+
+raw_path = OUTPUT_DIR / "paired_threshold_bootstrap_raw.csv"
+
+transition_path = (
+    OUTPUT_DIR / "paired_threshold_bootstrap_transitions.csv"
+)
+
+summary_path = OUTPUT_DIR / "paired_threshold_bootstrap_summary.csv"
 
 
 # ============================================================
@@ -181,6 +269,10 @@ for bootstrap_id in range(BOOTSTRAP_REPETITIONS):
     # threshold.
     #
     # This is what makes this a PAIRED threshold experiment.
+    #
+    # The RNG call is intentionally identical to the original
+    # script so the bootstrap samples remain the same for the
+    # same seed.
     # --------------------------------------------------------
 
     sample_indices = rng.integers(
@@ -191,7 +283,7 @@ for bootstrap_id in range(BOOTSTRAP_REPETITIONS):
 
     boot_labels = labels[sample_indices]
     boot_scores = scores[sample_indices]
-    boot_groups = groups[sample_indices]
+    boot_group_codes = group_codes[sample_indices]
 
     threshold_results = {}
 
@@ -201,10 +293,11 @@ for bootstrap_id in range(BOOTSTRAP_REPETITIONS):
 
     for threshold in THRESHOLDS:
 
-        metrics = calculate_metrics(
+        metrics = calculate_metrics_fast(
             boot_labels,
             boot_scores,
-            boot_groups,
+            boot_group_codes,
+            group_names,
             threshold
         )
 
@@ -232,9 +325,7 @@ for bootstrap_id in range(BOOTSTRAP_REPETITIONS):
     for metric in METRICS:
 
         rankings = {}
-
         gaps = {}
-
         worst_groups = {}
 
         for threshold in THRESHOLDS:
@@ -295,27 +386,38 @@ for bootstrap_id in range(BOOTSTRAP_REPETITIONS):
                 "magnitude_change": magnitude_change
             })
 
+    # --------------------------------------------------------
+    # CHECKPOINT
+    # --------------------------------------------------------
+
+    completed = bootstrap_id + 1
+
+    if completed % CHECKPOINT_EVERY == 0:
+        print(f"  Saving checkpoint at {completed}/{BOOTSTRAP_REPETITIONS}...")
+
+        save_checkpoints(
+            raw_results,
+            transition_results,
+            raw_path,
+            transition_path
+        )
+
+    # Explicitly release large per-bootstrap arrays.
+    del sample_indices
+    del boot_labels
+    del boot_scores
+    del boot_group_codes
+    del threshold_results
+
+    # Do not run gc.collect() every iteration; that would slow
+    # the experiment substantially. Checkpoints are enough.
+    if completed % CHECKPOINT_EVERY == 0:
+        gc.collect()
+
 
 # ============================================================
-# SAVE RAW RESULTS
+# SAVE FINAL RAW RESULTS
 # ============================================================
-
-OUTPUT_DIR.mkdir(
-    parents=True,
-    exist_ok=True
-)
-
-raw_path = OUTPUT_DIR / (
-    "paired_threshold_bootstrap_raw.csv"
-)
-
-transition_path = OUTPUT_DIR / (
-    "paired_threshold_bootstrap_transitions.csv"
-)
-
-summary_path = OUTPUT_DIR / (
-    "paired_threshold_bootstrap_summary.csv"
-)
 
 pd.DataFrame(raw_results).to_csv(
     raw_path,
