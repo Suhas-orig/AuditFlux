@@ -1,0 +1,4 @@
+model,threshold,fnr_worst_group,fnr_group_gap,fnr_ranking_worst_to_best,fpr_worst_group,fpr_group_gap,fpr_ranking_worst_to_best
+vgg16,0.5,AM,0.013692747560995859,AM > WM > BF > IM > WF > AF > IF > BM,IF,0.18255615940870573,IF > BF > AF > BM > AM > IM > WF > WM
+resnet50,0.5,AF,0.1417296831334527,AF > WF > AM > BM > BF > IF > IM > WM,IF,0.016003024384992195,IF > AF > AM > BF > IM > BM > WF > WM
+senet50,0.5,AF,0.052011333383962494,AF > IF > AM > WF > BM > BF > IM > WM,AF,0.0758525160574412,AF > AM > IF > BF > IM > BM > WF > WM

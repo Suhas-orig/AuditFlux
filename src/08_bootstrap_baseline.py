@@ -1,22 +1,85 @@
 import pandas as pd
 import numpy as np
-from scipy.stats import kendalltau
+from scipy.stats import kendalltau, rankdata
 from config import BFW_DATA_PATH, OUTPUT_DIR
-
 
 # =========================================================
 # CONFIG
 # =========================================================
 
-MODEL = "resnet50"
-
+MODELS = ["vgg16", "resnet50", "senet50"]
 THRESHOLD = 0.50
-
 BOOTSTRAP_REPETITIONS = 1000
-
 GROUP_COLUMN = "a1"
-
 RANDOM_SEED = 42
+
+# This is a paired row bootstrap: the SAME sampled row indices
+# are used for all three models in each repetition. This makes
+# model-to-model comparisons less confounded by different samples.
+# It is still a row-level bootstrap, not an identity/subject-level
+# bootstrap; see the methodological note printed at the end.
+
+
+# =========================================================
+# HELPERS
+# =========================================================
+
+def calculate_metrics(sampled_codes, number_of_groups):
+    """Return per-group FNR and FPR from encoded TN/FP/FN/TP counts."""
+    counts = np.bincount(
+        sampled_codes,
+        minlength=number_of_groups * 4
+    ).reshape(number_of_groups, 4)
+
+    tn = counts[:, 0].astype(float)
+    fp = counts[:, 1].astype(float)
+    fn = counts[:, 2].astype(float)
+    tp = counts[:, 3].astype(float)
+
+    positive_denominator = tp + fn
+    negative_denominator = fp + tn
+
+    fnr = np.divide(
+        fn,
+        positive_denominator,
+        out=np.full(number_of_groups, np.nan),
+        where=positive_denominator > 0
+    )
+    fpr = np.divide(
+        fp,
+        negative_denominator,
+        out=np.full(number_of_groups, np.nan),
+        where=negative_denominator > 0
+    )
+    return fnr, fpr
+
+
+def ranking_details(metric_values, group_names):
+    """Return worst group, descending ranking and average-tie rank positions."""
+    values = np.asarray(metric_values, dtype=float)
+    if np.isnan(values).any():
+        raise ValueError(
+            "A group has an undefined metric in a bootstrap replicate. "
+            "Increase sample size or use a suitable stratified design."
+        )
+
+    order = np.argsort(-values, kind="stable")
+    ordered_groups = [group_names[i] for i in order]
+
+    # rankdata assigns rank 1 to the largest value after negation.
+    # Average ranks handle exact ties without arbitrary tie-breaking.
+    rank_positions = rankdata(-values, method="average")
+    worst_group = group_names[order[0]]
+    gap = float(np.max(values) - np.min(values))
+    return worst_group, ordered_groups, rank_positions, gap
+
+
+def compare_rankings(reference_ranks, bootstrap_ranks):
+    """Kendall agreement between aligned group rank positions."""
+    tau, _ = kendalltau(reference_ranks, bootstrap_ranks)
+    if np.isnan(tau):
+        return np.nan, np.nan
+    return float(tau), float(1.0 - tau)
 
 
 # =========================================================
@@ -24,311 +87,134 @@ RANDOM_SEED = 42
 # =========================================================
 
 print("Loading BFW dataset...")
+required_columns = [GROUP_COLUMN, "label", *MODELS]
+df = pd.read_csv(BFW_DATA_PATH, usecols=required_columns)
 
-df = pd.read_csv(
-    BFW_DATA_PATH,
-    usecols=[GROUP_COLUMN, "label", MODEL]
-)
+if df[required_columns].isna().any().any():
+    raise ValueError("Missing values found in required BFW columns.")
+
+if not set(df["label"].unique()).issubset({0, 1}):
+    raise ValueError("Expected labels to be encoded as 0 and 1.")
 
 print(f"Dataset size: {len(df):,}")
-
-
-# =========================================================
-# PREPARE GROUPS
-# =========================================================
+print(f"Models: {', '.join(MODELS)}")
+print(f"Threshold: {THRESHOLD}")
+print(f"Bootstrap repetitions: {BOOTSTRAP_REPETITIONS:,}")
 
 groups = sorted(df[GROUP_COLUMN].unique())
+number_of_groups = len(groups)
+group_to_code = {group: i for i, group in enumerate(groups)}
+group_codes = df[GROUP_COLUMN].map(group_to_code).to_numpy(dtype=np.int16)
+labels = df["label"].to_numpy(dtype=np.int8)
 
-group_to_code = {
-    group: i
-    for i, group in enumerate(groups)
-}
+# Encode each row's group and confusion-matrix outcome separately per model.
+# Outcome code: 0=TN, 1=FP, 2=FN, 3=TP.
+combined_codes_by_model = {}
 
-group_codes = df[GROUP_COLUMN].map(group_to_code).to_numpy()
-
-labels = df["label"].to_numpy()
-
-predictions = (
-    df[MODEL].to_numpy() >= THRESHOLD
-).astype(np.int8)
-
-
-# =========================================================
-# CREATE FOUR OUTCOME CATEGORIES
-#
-# 0 = TN
-# 1 = FP
-# 2 = FN
-# 3 = TP
-# =========================================================
-
-outcome_codes = np.zeros(
-    len(df),
-    dtype=np.int8
-)
-
-# True negative
-outcome_codes[
-    (labels == 0) & (predictions == 0)
-] = 0
-
-# False positive
-outcome_codes[
-    (labels == 0) & (predictions == 1)
-] = 1
-
-# False negative
-outcome_codes[
-    (labels == 1) & (predictions == 0)
-] = 2
-
-# True positive
-outcome_codes[
-    (labels == 1) & (predictions == 1)
-] = 3
-
-
-# Combine group + outcome into one category.
-# There are 8 groups × 4 outcomes = 32 categories.
-
-combined_codes = (
-    group_codes * 4
-    + outcome_codes
-)
+for model in MODELS:
+    predictions = (df[model].to_numpy() >= THRESHOLD).astype(np.int8)
+    outcome_codes = np.zeros(len(df), dtype=np.int8)
+    outcome_codes[(labels == 0) & (predictions == 1)] = 1
+    outcome_codes[(labels == 1) & (predictions == 0)] = 2
+    outcome_codes[(labels == 1) & (predictions == 1)] = 3
+    combined_codes_by_model[model] = group_codes * 4 + outcome_codes
 
 
 # =========================================================
-# REFERENCE AUDIT
-#
-# This is the audit performed on the complete dataset.
-# Bootstrap rankings will be compared against this.
+# FULL-DATA REFERENCE AUDITS
 # =========================================================
 
-counts = np.bincount(
-    combined_codes,
-    minlength=len(groups) * 4
-).reshape(len(groups), 4)
+reference = {}
+reference_rows = []
 
-TN = counts[:, 0]
-FP = counts[:, 1]
-FN = counts[:, 2]
-TP = counts[:, 3]
+print("\n" + "=" * 72)
+print("FULL-DATA REFERENCE AUDITS")
+print("=" * 72)
 
-reference_TPR = TP / (TP + FN)
-reference_FNR = FN / (TP + FN)
-reference_FPR = FP / (FP + TN)
-
-reference_fnr_ranking = np.argsort(
-    -reference_FNR
-)
-
-reference_fpr_ranking = np.argsort(
-    -reference_FPR
-)
-
-reference_fnr_worst = groups[
-    reference_fnr_ranking[0]
-]
-
-reference_fpr_worst = groups[
-    reference_fpr_ranking[0]
-]
-
-
-# =========================================================
-# DISPLAY REFERENCE AUDIT
-# =========================================================
-
-print("\n" + "=" * 60)
-print("REFERENCE AUDIT")
-print("=" * 60)
-
-print(f"Threshold: {THRESHOLD}")
-
-print(
-    f"FNR worst group: "
-    f"{reference_fnr_worst}"
-)
-
-print(
-    f"FPR worst group: "
-    f"{reference_fpr_worst}"
-)
-
-print("\nFNR ranking:")
-
-print(
-    " > ".join(
-        groups[i]
-        for i in reference_fnr_ranking
+for model in MODELS:
+    fnr, fpr = calculate_metrics(
+        combined_codes_by_model[model], number_of_groups
     )
-)
+    fnr_worst, fnr_order, fnr_ranks, fnr_gap = ranking_details(fnr, groups)
+    fpr_worst, fpr_order, fpr_ranks, fpr_gap = ranking_details(fpr, groups)
 
-print("\nFPR ranking:")
+    reference[model] = {
+        "fnr_worst": fnr_worst,
+        "fpr_worst": fpr_worst,
+        "fnr_ranks": fnr_ranks,
+        "fpr_ranks": fpr_ranks,
+    }
 
-print(
-    " > ".join(
-        groups[i]
-        for i in reference_fpr_ranking
-    )
-)
+    print(f"\n{model.upper()}")
+    print(f"  FNR worst group: {fnr_worst}; gap: {fnr_gap:.6f}")
+    print(f"  FNR ranking (worst to best): {' > '.join(fnr_order)}")
+    print(f"  FPR worst group: {fpr_worst}; gap: {fpr_gap:.6f}")
+    print(f"  FPR ranking (worst to best): {' > '.join(fpr_order)}")
 
-
-# =========================================================
-# BOOTSTRAP
-# =========================================================
-
-rng = np.random.default_rng(RANDOM_SEED)
-
-results = []
-
-print("\n" + "=" * 60)
-print("BOOTSTRAP")
-print("=" * 60)
-
-for repetition in range(
-    1,
-    BOOTSTRAP_REPETITIONS + 1
-):
-
-    # -----------------------------------------------------
-    # Sample N rows WITH replacement.
-    # N = original dataset size.
-    # -----------------------------------------------------
-
-    sample_indices = rng.integers(
-        0,
-        len(df),
-        size=len(df)
-    )
-
-    sampled_codes = combined_codes[
-        sample_indices
-    ]
-
-
-    # -----------------------------------------------------
-    # Count TN / FP / FN / TP for every group
-    # -----------------------------------------------------
-
-    bootstrap_counts = np.bincount(
-        sampled_codes,
-        minlength=len(groups) * 4
-    ).reshape(len(groups), 4)
-
-    TN = bootstrap_counts[:, 0]
-    FP = bootstrap_counts[:, 1]
-    FN = bootstrap_counts[:, 2]
-    TP = bootstrap_counts[:, 3]
-
-
-    # -----------------------------------------------------
-    # Calculate metrics
-    # -----------------------------------------------------
-
-    TPR = TP / (TP + FN)
-
-    FNR = FN / (TP + FN)
-
-    FPR = FP / (FP + TN)
-
-
-    # -----------------------------------------------------
-    # FNR ranking
-    # -----------------------------------------------------
-
-    fnr_ranking = np.argsort(-FNR)
-
-    fnr_worst = groups[
-        fnr_ranking[0]
-    ]
-
-    fnr_gap = (
-        FNR.max() - FNR.min()
-    )
-
-    # Compare bootstrap ranking to reference ranking
-
-    fnr_tau, _ = kendalltau(
-        reference_fnr_ranking,
-        fnr_ranking
-    )
-
-    fnr_ranking_instability = (
-        1 - fnr_tau
-    )
-
-
-    # -----------------------------------------------------
-    # FPR ranking
-    # -----------------------------------------------------
-
-    fpr_ranking = np.argsort(-FPR)
-
-    fpr_worst = groups[
-        fpr_ranking[0]
-    ]
-
-    fpr_gap = (
-        FPR.max() - FPR.min()
-    )
-
-    fpr_tau, _ = kendalltau(
-        reference_fpr_ranking,
-        fpr_ranking
-    )
-
-    fpr_ranking_instability = (
-        1 - fpr_tau
-    )
-
-
-    # -----------------------------------------------------
-    # Store one row per bootstrap repetition
-    # -----------------------------------------------------
-
-    results.append({
-
-        "repetition": repetition,
-
-        # FNR
-
+    reference_rows.append({
+        "model": model,
+        "threshold": THRESHOLD,
         "fnr_worst_group": fnr_worst,
-
-        "fnr_worst_group_reversal": int(
-            fnr_worst != reference_fnr_worst
-        ),
-
-        "fnr_gap": fnr_gap,
-
-        "fnr_kendall_tau": fnr_tau,
-
-        "fnr_ranking_instability":
-            fnr_ranking_instability,
-
-        # FPR
-
+        "fnr_group_gap": fnr_gap,
+        "fnr_ranking_worst_to_best": " > ".join(fnr_order),
         "fpr_worst_group": fpr_worst,
-
-        "fpr_worst_group_reversal": int(
-            fpr_worst != reference_fpr_worst
-        ),
-
-        "fpr_gap": fpr_gap,
-
-        "fpr_kendall_tau": fpr_tau,
-
-        "fpr_ranking_instability":
-            fpr_ranking_instability
+        "fpr_group_gap": fpr_gap,
+        "fpr_ranking_worst_to_best": " > ".join(fpr_order),
     })
 
 
-    if repetition % 100 == 0:
+# =========================================================
+# PAIRED ROW BOOTSTRAP
+# =========================================================
 
-        print(
-            f"Completed "
-            f"{repetition}/{BOOTSTRAP_REPETITIONS}"
+rng = np.random.default_rng(RANDOM_SEED)
+results = []
+
+print("\n" + "=" * 72)
+print("PAIRED ROW BOOTSTRAP")
+print("=" * 72)
+
+for repetition in range(1, BOOTSTRAP_REPETITIONS + 1):
+    # Resample N rows with replacement. The same indices are reused
+    # for every model within this repetition.
+    sample_indices = rng.integers(0, len(df), size=len(df))
+
+    for model in MODELS:
+        sampled_codes = combined_codes_by_model[model][sample_indices]
+        fnr, fpr = calculate_metrics(sampled_codes, number_of_groups)
+
+        fnr_worst, _, fnr_ranks, fnr_gap = ranking_details(fnr, groups)
+        fpr_worst, _, fpr_ranks, fpr_gap = ranking_details(fpr, groups)
+
+        fnr_tau, fnr_instability = compare_rankings(
+            reference[model]["fnr_ranks"], fnr_ranks
         )
+        fpr_tau, fpr_instability = compare_rankings(
+            reference[model]["fpr_ranks"], fpr_ranks
+        )
+
+        results.append({
+            "model": model,
+            "repetition": repetition,
+            "threshold": THRESHOLD,
+            "fnr_worst_group": fnr_worst,
+            "fnr_worst_group_reversal": int(
+                fnr_worst != reference[model]["fnr_worst"]
+            ),
+            "fnr_gap": fnr_gap,
+            "fnr_kendall_tau": fnr_tau,
+            "fnr_ranking_instability": fnr_instability,
+            "fpr_worst_group": fpr_worst,
+            "fpr_worst_group_reversal": int(
+                fpr_worst != reference[model]["fpr_worst"]
+            ),
+            "fpr_gap": fpr_gap,
+            "fpr_kendall_tau": fpr_tau,
+            "fpr_ranking_instability": fpr_instability,
+        })
+
+    if repetition % 100 == 0:
+        print(f"Completed {repetition:,}/{BOOTSTRAP_REPETITIONS:,} repetitions")
 
 
 # =========================================================
@@ -336,145 +222,62 @@ for repetition in range(
 # =========================================================
 
 results_df = pd.DataFrame(results)
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-OUTPUT_PATH = (
-    OUTPUT_DIR / "bootstrap_baseline_resnet50.csv"
-)
+combined_output = OUTPUT_DIR / "bootstrap_baseline_all_models_corrected.csv"
+results_df.to_csv(combined_output, index=False)
 
-results_df.to_csv(
-    OUTPUT_PATH,
-    index=False
-)
+for model in MODELS:
+    model_output = OUTPUT_DIR / f"bootstrap_baseline_{model}_corrected.csv"
+    results_df[results_df["model"] == model].to_csv(model_output, index=False)
+
+reference_df = pd.DataFrame(reference_rows)
+reference_output = OUTPUT_DIR / "bootstrap_reference_audit_all_models.csv"
+reference_df.to_csv(reference_output, index=False)
 
 
 # =========================================================
 # SUMMARY
 # =========================================================
 
-print("\n" + "=" * 60)
+print("\n" + "=" * 72)
 print("BOOTSTRAP SUMMARY")
-print("=" * 60)
+print("=" * 72)
 
+for model in MODELS:
+    model_results = results_df[results_df["model"] == model]
+    print(f"\n{model.upper()}")
 
-# ---------------------------------------------------------
-# Worst-group frequencies
-# ---------------------------------------------------------
+    for metric in ["fnr", "fpr"]:
+        worst_col = f"{metric}_worst_group"
+        reversal_col = f"{metric}_worst_group_reversal"
+        instability_col = f"{metric}_ranking_instability"
+        gap_col = f"{metric}_gap"
 
-print("\nFNR worst-group frequency:")
+        frequencies = model_results[worst_col].value_counts().to_dict()
+        reversal_rate = model_results[reversal_col].mean()
+        mean_instability = model_results[instability_col].mean()
+        instability_percentiles = model_results[instability_col].quantile(
+            [0.025, 0.50, 0.975]
+        )
 
-print(
-    results_df[
-        "fnr_worst_group"
-    ].value_counts()
-)
-
-
-print("\nFPR worst-group frequency:")
-
-print(
-    results_df[
-        "fpr_worst_group"
-    ].value_counts()
-)
-
-
-# ---------------------------------------------------------
-# Reversal rates
-# ---------------------------------------------------------
-
-fnr_reversal_rate = (
-    results_df[
-        "fnr_worst_group_reversal"
-    ].mean()
-)
-
-fpr_reversal_rate = (
-    results_df[
-        "fpr_worst_group_reversal"
-    ].mean()
-)
-
-
-print(
-    f"\nFNR worst-group reversal rate: "
-    f"{fnr_reversal_rate:.4f}"
-)
-
-print(
-    f"FPR worst-group reversal rate: "
-    f"{fpr_reversal_rate:.4f}"
-)
-
-
-# ---------------------------------------------------------
-# Ranking instability
-# ---------------------------------------------------------
-
-print("\nAverage ranking instability:")
-
-print(
-    f"FNR: "
-    f"{results_df['fnr_ranking_instability'].mean():.4f}"
-)
-
-print(
-    f"FPR: "
-    f"{results_df['fpr_ranking_instability'].mean():.4f}"
-)
-
-
-# ---------------------------------------------------------
-# Gap variability
-# ---------------------------------------------------------
-
-print("\nGap statistics:")
-
-print(
-    f"FNR gap mean: "
-    f"{results_df['fnr_gap'].mean():.6f}"
-)
-
-print(
-    f"FNR gap SD: "
-    f"{results_df['fnr_gap'].std():.6f}"
-)
-
-print(
-    f"FPR gap mean: "
-    f"{results_df['fpr_gap'].mean():.6f}"
-)
-
-print(
-    f"FPR gap SD: "
-    f"{results_df['fpr_gap'].std():.6f}"
-)
-
-
-# ---------------------------------------------------------
-# Percentiles
-# ---------------------------------------------------------
-
-print("\nFNR ranking instability percentiles:")
-
-print(
-    results_df[
-        "fnr_ranking_instability"
-    ].quantile(
-        [0.025, 0.50, 0.975]
-    )
-)
-
-
-print("\nFPR ranking instability percentiles:")
-
-print(
-    results_df[
-        "fpr_ranking_instability"
-    ].quantile(
-        [0.025, 0.50, 0.975]
-    )
-)
-
+        print(f"  {metric.upper()}:")
+        print(f"    Worst-group frequencies: {frequencies}")
+        print(f"    Worst-group reversal rate: {reversal_rate:.4f}")
+        print(f"    Mean ranking instability (1 - Kendall tau): {mean_instability:.4f}")
+        print(
+            "    Ranking-instability percentiles "
+            f"(2.5%, 50%, 97.5%): {instability_percentiles.to_list()}"
+        )
+        print(
+            f"    Group-gap mean: {model_results[gap_col].mean():.6f}; "
+            f"SD: {model_results[gap_col].std():.6f}"
+        )
 
 print("\nDONE")
-print(f"Saved to: {OUTPUT_PATH}")
+print(f"Combined bootstrap results: {combined_output}")
+print(f"Reference audit: {reference_output}")
+print("Per-model bootstrap files were also saved.")
+print("\nMethodological note: this is a row-level bootstrap. If pair records")
+print("share identities, row independence may be violated. An identity-aware")
+print("cluster bootstrap would be a stronger follow-up if identity IDs exist.")
