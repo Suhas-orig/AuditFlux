@@ -1,18 +1,43 @@
-# BFW dataset / large files
+BFW dataset / large files
+
 *.zip
 *.md5
+*.csv
 
-# Python cache
-__pycache__/
-*.pyc
+Python cache
 
-# Virtual environments
+pycache/
+*.py[cod]
+
+Virtual environments
+
 venv/
 .venv/
+.venv-p20/
 
-# VS Code
+VS Code
+
 .vscode/
 
-# OS
+OS
+
 Thumbs.db
 .DS_Store
+
+Jupyter
+
+.ipynb_checkpoints/
+
+Generated outputs
+
+outputs/
+
+Temporary files
+
+*.log
+*.tmp
+
+Secrets
+
+.env
+.streamlit/secrets.toml
